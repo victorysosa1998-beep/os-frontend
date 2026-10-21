@@ -1,0 +1,238 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:livekit_client/livekit_client.dart';
+import '../services/api.dart';
+
+/// Real one-to-one LiveKit call UI. The backend controls call permissions and
+/// issues short-lived participant tokens; no LiveKit secret is shipped here.
+class LiveCallScreen extends StatefulWidget {
+  final Map<String, dynamic> call;
+  final bool isCaller;
+  const LiveCallScreen({super.key, required this.call, required this.isCaller});
+
+  @override
+  State<LiveCallScreen> createState() => _LiveCallScreenState();
+}
+
+class _LiveCallScreenState extends State<LiveCallScreen> {
+  late final int callId;
+  late final bool videoCall;
+  late final String otherName;
+  final Room room = Room(roomOptions: RoomOptions(adaptiveStream: true, dynacast: true));
+  late final EventsListener<RoomEvent> listener;
+  Timer? statusTimer;
+  bool connecting = false;
+  bool connected = false;
+  bool muted = false;
+  bool cameraEnabled = true;
+  bool speaker = true;
+  bool ending = false;
+  bool closed = false;
+  bool checking = false;
+  String? error;
+  String statusText = 'Connecting securely…';
+
+  @override
+  void initState() {
+    super.initState();
+    callId = int.tryParse('${widget.call['id']}') ?? 0;
+    videoCall = widget.call['call_type'] == 'video';
+    final other = widget.call['other_user'];
+    otherName = other is Map ? '${other['display_name'] ?? 'OS member'}' : 'OS member';
+    listener = room.createListener()
+      ..on<ParticipantConnectedEvent>((_) => _refreshRoom())
+      ..on<ParticipantDisconnectedEvent>((_) => _refreshRoom())
+      ..on<TrackSubscribedEvent>((_) => _refreshRoom())
+      ..on<TrackUnsubscribedEvent>((_) => _refreshRoom())
+      ..on<TrackMutedEvent>((_) => _refreshRoom())
+      ..on<TrackUnmutedEvent>((_) => _refreshRoom())
+      ..on<LocalTrackPublishedEvent>((_) => _refreshRoom())
+      ..on<LocalTrackUnpublishedEvent>((_) => _refreshRoom())
+      ..on<RoomDisconnectedEvent>((_) {
+        if (mounted && !ending) setState(() { connected = false; statusText = 'Call disconnected'; });
+      });
+    room.addListener(_refreshRoom);
+    statusTimer = Timer.periodic(const Duration(seconds: 3), (_) => _checkCall());
+    _checkCall();
+  }
+
+  /// Closes the screen. Navigator.pop is used (not maybePop) because PopScope
+  /// blocks maybePop, which previously left the screen stuck open after ending.
+  void _close() {
+    if (closed) return;
+    closed = true;
+    ending = true;
+    statusTimer?.cancel();
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  Future<void> _checkCall() async {
+    if (!mounted || ending || callId <= 0 || checking) return;
+    checking = true;
+    try {
+      final call = await Api.callStatus(callId);
+      if (!mounted || ending) return;
+      final status = '${call['status'] ?? ''}';
+      if (status == 'in_progress' && !connected && !connecting && error == null) {
+        await _connect();
+      } else if (['declined', 'ended', 'missed'].contains(status)) {
+        statusTimer?.cancel();
+        if (status == 'declined' && widget.isCaller) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('The call was declined.')));
+        }
+        try { await room.disconnect(); } catch (_) {}
+        _close();
+      } else if (status == 'ringing' && !connected) {
+        setState(() => statusText = widget.isCaller ? 'Ringing $otherName…' : 'Connecting…');
+      }
+    } catch (_) {
+      // Network interruptions are handled by the SDK's reconnect logic.
+    } finally {
+      checking = false;
+    }
+  }
+
+  Future<void> _connect() async {
+    if (connecting || connected || ending) return;
+    setState(() { connecting = true; error = null; statusText = 'Connecting to call…'; });
+    try {
+      final credentials = await Api.callToken(callId);
+      final url = '${credentials['server_url'] ?? ''}'.trim();
+      final token = '${credentials['participant_token'] ?? ''}'.trim();
+      if (url.isEmpty || token.isEmpty) throw Exception('The call server did not return valid connection credentials.');
+      await room.prepareConnection(url, token);
+      await room.connect(url, token, roomOptions: RoomOptions(adaptiveStream: true, dynacast: true));
+      if (!mounted || ending) {
+        try { await room.disconnect(); } catch (_) {}
+        return;
+      }
+      final local = room.localParticipant;
+      if (local == null) throw Exception('LiveKit connected without a local participant.');
+      await local.setMicrophoneEnabled(true);
+      if (videoCall) {
+        try { await local.setCameraEnabled(true); } catch (_) {}
+      }
+      try { await AudioManager.instance.setSpeakerOutputPreferred(true); } catch (_) {}
+      if (!mounted) return;
+      setState(() { connected = true; connecting = false; statusText = 'Connected'; speaker = true; cameraEnabled = videoCall; });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { connecting = false; error = '$e'.replaceFirst('Exception: ', ''); statusText = 'Could not connect'; });
+    }
+  }
+
+  void _refreshRoom() { if (mounted) setState(() {}); }
+
+  VideoTrack? _videoFor(Participant? participant, {required bool remote}) {
+    if (participant == null) return null;
+    for (final publication in participant.videoTrackPublications) {
+      if (publication.kind != TrackType.VIDEO || publication.isScreenShare) continue;
+      if (remote && !publication.subscribed) continue;
+      if (publication.muted) continue;
+      final track = publication.track;
+      if (track is VideoTrack) return track;
+    }
+    return null;
+  }
+
+  Future<void> _toggleMic() async {
+    try {
+      final local = room.localParticipant;
+      if (local == null) return;
+      await local.setMicrophoneEnabled(muted);
+      if (mounted) setState(() => muted = !muted);
+    } catch (e) { _showError('Microphone control failed: $e'); }
+  }
+
+  Future<void> _toggleCamera() async {
+    try {
+      final local = room.localParticipant;
+      if (local == null) return;
+      await local.setCameraEnabled(!cameraEnabled);
+      if (mounted) setState(() => cameraEnabled = !cameraEnabled);
+    } catch (e) { _showError('Camera control failed: $e'); }
+  }
+
+  Future<void> _toggleSpeaker() async {
+    try {
+      await AudioManager.instance.setSpeakerOutputPreferred(!speaker);
+      if (mounted) setState(() => speaker = !speaker);
+    } catch (e) { _showError('Audio routing could not be changed.'); }
+  }
+
+  void _showError(String message) {
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _endCall() async {
+    if (ending) return;
+    ending = true;
+    statusTimer?.cancel();
+    try { await Api.endCall(callId); } catch (_) {}
+    try { await room.disconnect(); } catch (_) {}
+    closed = false; // allow _close to run now that cleanup is done
+    _close();
+  }
+
+  @override
+  void dispose() {
+    statusTimer?.cancel();
+    room.removeListener(_refreshRoom);
+    listener.dispose();
+    unawaited(room.disconnect());
+    unawaited(room.dispose());
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final remoteParticipants = room.remoteParticipants.values.toList();
+    final remote = remoteParticipants.isEmpty ? null : remoteParticipants.first;
+    final remoteTrack = _videoFor(remote, remote: true);
+    final localTrack = _videoFor(room.localParticipant, remote: false);
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (didPop) { if (!didPop) _endCall(); },
+      child: Scaffold(
+      backgroundColor: const Color(0xFF101014),
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        leading: IconButton(onPressed: _endCall, icon: const Icon(Icons.arrow_back)),
+        backgroundColor: const Color(0xFF101014), foregroundColor: Colors.white,
+        title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(otherName, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+          Text(statusText, style: const TextStyle(fontSize: 12, color: Colors.white70)),
+        ]),
+      ),
+      body: SafeArea(child: Column(children: [
+        Expanded(child: Stack(fit: StackFit.expand, children: [
+          if (videoCall && remoteTrack != null)
+            VideoTrackRenderer(remoteTrack, fit: VideoViewFit.cover)
+          else
+            Container(color: const Color(0xFF19191F), child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+              CircleAvatar(radius: 54, backgroundColor: const Color(0xFF6E43D9), child: Text(otherName.isEmpty ? 'O' : otherName[0].toUpperCase(), style: const TextStyle(fontSize: 40, color: Colors.white, fontWeight: FontWeight.w800))),
+              const SizedBox(height: 18), Text(otherName, style: const TextStyle(color: Colors.white, fontSize: 23, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8), Text(videoCall ? 'Waiting for video…' : 'OS audio call', style: const TextStyle(color: Colors.white70)),
+              if (!connected && error == null) ...[const SizedBox(height: 20), const CircularProgressIndicator(color: Colors.white)],
+            ]))),
+          if (videoCall && localTrack != null && cameraEnabled)
+            Positioned(right: 16, top: 16, width: 112, height: 160, child: ClipRRect(borderRadius: BorderRadius.circular(14), child: VideoTrackRenderer(localTrack, fit: VideoViewFit.cover))),
+          if (error != null)
+            Positioned(left: 18, right: 18, bottom: 18, child: Material(color: const Color(0xFF3B2025), borderRadius: BorderRadius.circular(12), child: Padding(padding: const EdgeInsets.all(12), child: Column(mainAxisSize: MainAxisSize.min, children: [Text(error!, style: const TextStyle(color: Colors.white)), const SizedBox(height: 8), FilledButton(onPressed: connecting ? null : _connect, child: const Text('Retry connection'))]))),
+        ])),
+        Padding(padding: const EdgeInsets.fromLTRB(16, 18, 16, 24), child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+          _control(icon: muted ? Icons.mic_off : Icons.mic, label: muted ? 'Unmute' : 'Mute', onTap: connected ? _toggleMic : null),
+          if (videoCall) _control(icon: cameraEnabled ? Icons.videocam : Icons.videocam_off, label: 'Camera', onTap: connected ? _toggleCamera : null),
+          _control(icon: speaker ? Icons.volume_up : Icons.hearing, label: 'Speaker', onTap: connected ? _toggleSpeaker : null),
+          _control(icon: Icons.call_end, label: 'End', color: const Color(0xFFE54555), onTap: _endCall),
+        ])),
+      ])),
+      ),
+    );
+  }
+
+  Widget _control({required IconData icon, required String label, required VoidCallback? onTap, Color color = const Color(0xFF303039)}) => Column(mainAxisSize: MainAxisSize.min, children: [
+    SizedBox(width: 58, height: 58, child: FilledButton(onPressed: onTap, style: FilledButton.styleFrom(backgroundColor: color, foregroundColor: Colors.white, shape: const CircleBorder(), padding: EdgeInsets.zero), child: Icon(icon, size: 24))),
+    const SizedBox(height: 7), Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+  ]);
+}

@@ -1,0 +1,2017 @@
+﻿
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:video_player/video_player.dart';
+
+import '../services/api.dart';
+import '../theme/app_theme.dart';
+import '../theme/os_ui.dart';
+import 'chat_screen.dart';
+import 'settings_screen.dart';
+import 'verification_screen.dart';
+
+// ============================================================
+// OS APP SHELL
+// ============================================================
+
+class AppShell extends StatefulWidget {
+  final Map<String, dynamic> user;
+  final VoidCallback onLogout;
+
+  const AppShell({
+    super.key,
+    required this.user,
+    required this.onLogout,
+  });
+
+  @override
+  State<AppShell> createState() => _ShellState();
+}
+
+class _ShellState extends State<AppShell> {
+  int tab = 0;
+  late Map<String, dynamic> user;
+
+  @override
+  void initState() {
+    super.initState();
+    user = Map<String, dynamic>.from(widget.user);
+  }
+
+  @override
+  void didUpdateWidget(covariant AppShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.user != widget.user) {
+      user = Map<String, dynamic>.from(widget.user);
+    }
+  }
+
+  void refresh(Map<String, dynamic> updatedUser) {
+    if (!mounted) return;
+
+    setState(() {
+      user = Map<String, dynamic>.from(updatedUser);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = <Widget>[
+      Feed(key: const PageStorageKey('feed'), user: user),
+      Discover(key: const PageStorageKey('discover'), user: user),
+      VerificationScreen(user: user, onChanged: refresh),
+      Chats(key: const PageStorageKey('chats'), myId: user['id']),
+      Profile(
+        key: const PageStorageKey('profile'),
+        user: user,
+        onChanged: refresh,
+        onLogout: widget.onLogout,
+      ),
+    ];
+
+    return Scaffold(
+      appBar: AppBar(
+        titleSpacing: 18,
+        title: const OsLogo(size: 34),
+        actions: [
+          IconButton(
+            tooltip: 'Settings',
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => SettingsScreen(user: user, onLogout: widget.onLogout),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+        ],
+      ),
+      body: SafeArea(
+        child: IndexedStack(
+          index: tab,
+          children: pages,
+        ),
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: tab,
+        onDestinationSelected: (index) {
+          setState(() => tab = index);
+        },
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.dynamic_feed_outlined),
+            selectedIcon: Icon(Icons.dynamic_feed),
+            label: 'Feed',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.explore_outlined),
+            selectedIcon: Icon(Icons.explore),
+            label: 'Discover',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.verified_user_outlined),
+            selectedIcon: Icon(Icons.verified_user),
+            label: 'Verify',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.chat_bubble_outline),
+            selectedIcon: Icon(Icons.chat_bubble),
+            label: 'Chats',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.person_outline),
+            selectedIcon: Icon(Icons.person),
+            label: 'You',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// FEED
+// ============================================================
+
+class Feed extends StatefulWidget {
+  final Map<String, dynamic> user;
+
+  const Feed({
+    super.key,
+    required this.user,
+  });
+
+  @override
+  State<Feed> createState() => _FeedState();
+}
+
+class _FeedState extends State<Feed> {
+  String gender = 'all';
+  bool loading = true;
+  bool posting = false;
+
+  List<dynamic> posts = [];
+
+  Future<void> load() async {
+    if (mounted) {
+      setState(() => loading = true);
+    }
+
+    try {
+      final result = await Api.feed(gender);
+
+      if (!mounted) return;
+
+      setState(() {
+        posts = result;
+        loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => loading = false);
+      _showMessage('Could not load the feed: $e');
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  Future<void> addPost() async {
+    final controller = TextEditingController();
+    XFile? selectedMedia;
+    bool selectedVideo = false;
+    bool submitting = false;
+
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) {
+          return StatefulBuilder(
+            builder: (ctx, setLocal) {
+              Future<void> choosePhoto() async {
+                try {
+                  final file = await ImagePicker().pickImage(
+                    source: ImageSource.gallery,
+                    imageQuality: 88,
+                  );
+                  if (file != null) {
+                    setLocal(() {
+                      selectedMedia = file;
+                      selectedVideo = false;
+                    });
+                  }
+                } catch (e) {
+                  if (mounted) _showMessage('Could not select photo: $e');
+                }
+              }
+
+              Future<void> chooseVideo() async {
+                try {
+                  final file = await ImagePicker().pickVideo(
+                    source: ImageSource.gallery,
+                    maxDuration: const Duration(minutes: 3),
+                  );
+                  if (file != null) {
+                    setLocal(() {
+                      selectedMedia = file;
+                      selectedVideo = true;
+                    });
+                  }
+                } catch (e) {
+                  if (mounted) _showMessage('Could not select video: $e');
+                }
+              }
+
+              return AlertDialog(
+                title: const Text('Share a status'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextField(
+                        controller: controller,
+                        maxLines: 5,
+                        maxLength: 500,
+                        decoration: const InputDecoration(
+                          hintText: 'What is on your mind?',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: submitting ? null : choosePhoto,
+                              icon: const Icon(Icons.image_outlined),
+                              label: const Text('Photo'),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: submitting ? null : chooseVideo,
+                              icon: const Icon(Icons.video_library_outlined),
+                              label: const Text('Video'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (selectedMedia != null) ...[
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Icon(
+                              selectedVideo
+                                  ? Icons.play_circle_outline
+                                  : Icons.check_circle_outline,
+                              color: OsColors.muted,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '${selectedVideo ? 'Video' : 'Photo'} selected: '
+                                '${selectedMedia!.name}',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Remove media',
+                              onPressed: submitting
+                                  ? null
+                                  : () => setLocal(() {
+                                        selectedMedia = null;
+                                        selectedVideo = false;
+                                      }),
+                              icon: const Icon(Icons.close),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: submitting
+                        ? null
+                        : () => Navigator.pop(dialogContext),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    onPressed: submitting
+                        ? null
+                        : () async {
+                            if (controller.text.trim().isEmpty &&
+                                selectedMedia == null) {
+                              return;
+                            }
+
+                            setLocal(() => submitting = true);
+
+                            try {
+                              String? mediaKey;
+
+                              if (selectedMedia != null) {
+                                final fallbackType = selectedVideo
+                                    ? 'video/mp4'
+                                    : 'image/jpeg';
+                                final contentType =
+                                    selectedMedia!.mimeType ?? fallbackType;
+
+                                final uploaded = await Api.upload(
+                                  File(selectedMedia!.path),
+                                  'post',
+                                  contentType,
+                                );
+
+                                mediaKey =
+                                    uploaded['object_key']?.toString() ??
+                                    uploaded['key']?.toString();
+
+                                if (mediaKey == null || mediaKey.isEmpty) {
+                                  throw Exception(
+                                    'Media upload did not return a media key.',
+                                  );
+                                }
+                              }
+
+                              await Api.createPost(
+                                controller.text.trim(),
+                                mediaKey,
+                              );
+
+                              if (!mounted) return;
+
+                              Navigator.pop(dialogContext);
+                              _showMessage(
+                                selectedVideo
+                                    ? 'Video status published.'
+                                    : 'Status published.',
+                              );
+                              await load();
+                            } catch (e) {
+                              setLocal(() => submitting = false);
+                              if (mounted) {
+                                _showMessage('Could not publish status: $e');
+                              }
+                            }
+                          },
+                    child: submitting
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('Post'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RefreshIndicator(
+      onRefresh: load,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(22),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [
+                  Color(0xFF332456),
+                  Color(0xFF1B1730),
+                  Color(0xFF352039),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(26),
+            ),
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'GOOD CONNECTIONS START HERE',
+                  style: TextStyle(
+                    color: Color(0xFFD2C3FF),
+                    letterSpacing: 1.3,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                SizedBox(height: 10),
+                Text(
+                  'A little more\nreal. A lot more you.',
+                  style: TextStyle(
+                    fontSize: 29,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                SizedBox(height: 10),
+                Text(
+                  'Share a moment, express yourself, and discover '
+                  'people looking for real connections.',
+                  style: TextStyle(
+                    color: OsColors.muted,
+                    height: 1.45,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Status feed',
+                  style: TextStyle(
+                    fontSize: 21,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              DropdownButton<String>(
+                value: gender,
+                underline: const SizedBox(),
+                items: const [
+                  DropdownMenuItem(
+                    value: 'all',
+                    child: Text('Everyone'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'female',
+                    child: Text('Women'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'male',
+                    child: Text('Men'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value == null) return;
+
+                  setState(() => gender = value);
+                  load();
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: OutlinedButton.icon(
+              onPressed: posting ? null : addPost,
+              icon: const Icon(Icons.add),
+              label: const Text('Post a status'),
+            ),
+          ),
+          if (loading)
+            const Padding(
+              padding: EdgeInsets.all(40),
+              child: Center(
+                child: CircularProgressIndicator(),
+              ),
+            )
+          else if (posts.isEmpty)
+            const EmptyState(
+              icon: Icons.dynamic_feed_outlined,
+              title: 'Nothing here yet',
+              text: 'Be the first to share a moment with the OS community.',
+            )
+          else
+            ...posts.map((post) => PostCard(p: post)),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// POST CARD
+// ============================================================
+
+class PostCard extends StatelessWidget {
+  final dynamic p;
+
+  const PostCard({
+    super.key,
+    required this.p,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final post = p is Map
+        ? Map<String, dynamic>.from(p)
+        : <String, dynamic>{};
+
+    final author = post['author'] is Map
+        ? Map<String, dynamic>.from(post['author'])
+        : <String, dynamic>{};
+
+    final name = safeName(author['display_name']);
+    final city = (author['city'] ?? '').toString();
+    final authorGender = (author['gender'] ?? '').toString();
+    final content = (post['text'] ?? '').toString();
+    final mediaKey = post['media_key']?.toString();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 13),
+      padding: const EdgeInsets.all(17),
+      decoration: BoxDecoration(
+        color: OsColors.surface,
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              AvatarPhoto(user: author, radius: 23),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Text(
+                      [
+                        if (city.isNotEmpty) city,
+                        if (authorGender.isNotEmpty) authorGender,
+                      ].join(' Â· '),
+                      style: const TextStyle(
+                        color: OsColors.muted,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (content.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 14),
+              child: Text(
+                content,
+                style: const TextStyle(
+                  height: 1.5,
+                  fontSize: 14,
+                ),
+              ),
+            ),
+          if (mediaKey != null && mediaKey.isNotEmpty)
+            MediaThumb(keyValue: mediaKey),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// MEDIA THUMBNAIL
+// ============================================================
+
+class MediaThumb extends StatefulWidget {
+  final String keyValue;
+
+  const MediaThumb({
+    super.key,
+    required this.keyValue,
+  });
+
+  @override
+  State<MediaThumb> createState() => _MediaThumbState();
+}
+
+class _MediaThumbState extends State<MediaThumb> {
+  String? url;
+  bool failed = false;
+
+  bool get isVideo {
+    final key = widget.keyValue.toLowerCase().split('?').first;
+    return key.endsWith('.mp4') ||
+        key.endsWith('.mov') ||
+        key.endsWith('.m4v') ||
+        key.endsWith('.webm');
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    loadUrl();
+  }
+
+  @override
+  void didUpdateWidget(covariant MediaThumb oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.keyValue != widget.keyValue) {
+      url = null;
+      failed = false;
+      loadUrl();
+    }
+  }
+
+  Future<void> loadUrl() async {
+    try {
+      final result = await Api.mediaUrl(widget.keyValue);
+      if (!mounted) return;
+      setState(() => url = result);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => failed = true);
+    }
+  }
+
+  void openViewer() {
+    final mediaUrl = url;
+    if (mediaUrl == null || mediaUrl.isEmpty) return;
+
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => FullScreenMediaViewer(
+          url: mediaUrl,
+          isVideo: isVideo,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (failed) {
+      return const SizedBox(
+        height: 160,
+        child: Center(child: Icon(Icons.broken_image_outlined)),
+      );
+    }
+
+    if (url == null) {
+      return const SizedBox(
+        height: 160,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(18),
+        child: GestureDetector(
+          onTap: openViewer,
+          child: SizedBox(
+            height: 260,
+            width: double.infinity,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (isVideo)
+                  Container(
+                    color: Colors.black,
+                    child: const Center(
+                      child: Icon(
+                        Icons.play_circle_fill_rounded,
+                        color: Colors.white,
+                        size: 68,
+                      ),
+                    ),
+                  )
+                else
+                  Image.network(
+                    url!,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => const Center(
+                      child: Icon(Icons.broken_image_outlined),
+                    ),
+                  ),
+                if (isVideo)
+                  const Positioned(
+                    right: 12,
+                    bottom: 12,
+                    child: Icon(
+                      Icons.videocam_outlined,
+                      color: Colors.white,
+                      size: 25,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Full-screen photo and video viewer.
+class FullScreenMediaViewer extends StatefulWidget {
+  final String url;
+  final bool isVideo;
+
+  const FullScreenMediaViewer({
+    super.key,
+    required this.url,
+    required this.isVideo,
+  });
+
+  @override
+  State<FullScreenMediaViewer> createState() =>
+      _FullScreenMediaViewerState();
+}
+
+class _FullScreenMediaViewerState extends State<FullScreenMediaViewer> {
+  VideoPlayerController? controller;
+  String? videoError;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.isVideo) {
+      initializeVideo();
+    }
+  }
+
+  Future<void> initializeVideo() async {
+    final player = VideoPlayerController.networkUrl(Uri.parse(widget.url));
+    controller = player;
+
+    try {
+      await player.initialize();
+      if (!mounted) {
+        await player.dispose();
+        return;
+      }
+      await player.setLooping(true);
+      await player.play();
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => videoError = 'Could not play this video. Check your connection or try another video.');
+    }
+  }
+
+  @override
+  void dispose() {
+    controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final player = controller;
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: Text(widget.isVideo ? 'Video status' : 'Photo'),
+      ),
+      body: SafeArea(
+        child: Center(
+          child: widget.isVideo
+              ? _buildVideo(player)
+              : InteractiveViewer(
+                  minScale: 0.8,
+                  maxScale: 4,
+                  child: Image.network(
+                    widget.url,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Icon(
+                      Icons.broken_image_outlined,
+                      color: Colors.white,
+                      size: 48,
+                    ),
+                  ),
+                ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildVideo(VideoPlayerController? player) {
+    if (videoError != null) {
+      return Padding(
+        padding: const EdgeInsets.all(24),
+        child: Text(
+          videoError!,
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.white),
+        ),
+      );
+    }
+
+    if (player == null || !player.value.isInitialized) {
+      return const CircularProgressIndicator(color: Colors.white);
+    }
+
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        AspectRatio(
+          aspectRatio: player.value.aspectRatio > 0
+              ? player.value.aspectRatio
+              : 9 / 16,
+          child: VideoPlayer(player),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+          child: VideoProgressIndicator(
+            player,
+            allowScrubbing: true,
+            colors: const VideoProgressColors(
+              playedColor: Colors.white,
+              bufferedColor: Colors.white38,
+              backgroundColor: Colors.white24,
+            ),
+          ),
+        ),
+        IconButton(
+          tooltip: player.value.isPlaying ? 'Pause video' : 'Play video',
+          color: Colors.white,
+          iconSize: 38,
+          onPressed: () {
+            setState(() {
+              if (player.value.isPlaying) {
+                player.pause();
+              } else {
+                player.play();
+              }
+            });
+          },
+          icon: Icon(
+            player.value.isPlaying
+                ? Icons.pause_circle_filled
+                : Icons.play_circle_fill,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ============================================================
+// DISCOVER
+// ============================================================
+
+class Discover extends StatefulWidget {
+  final Map<String, dynamic> user;
+
+  const Discover({
+    super.key,
+    required this.user,
+  });
+
+  @override
+  State<Discover> createState() => _DiscoverState();
+}
+
+class _DiscoverState extends State<Discover> {
+  String gender = 'all';
+  String city = '';
+
+  bool nearby = false;
+  bool loading = false;
+
+  List<dynamic> people = [];
+
+  final search = TextEditingController();
+  final cityController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  @override
+  void dispose() {
+    search.dispose();
+    cityController.dispose();
+    super.dispose();
+  }
+
+  Future<void> load() async {
+    if (mounted) {
+      setState(() => loading = true);
+    }
+
+    try {
+      final results = await Api.discover(
+        gender: gender,
+        q: search.text.trim(),
+        city: cityController.text.trim(),
+        nearby: nearby,
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        people = results;
+        loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => loading = false);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Search failed: $e')),
+      );
+    }
+  }
+
+  Future<void> locate() async {
+    try {
+      final serviceEnabled =
+          await Geolocator.isLocationServiceEnabled();
+
+      if (!serviceEnabled) {
+        if (!mounted) return;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Enable location services to find nearby people.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      var permission = await Geolocator.checkPermission();
+
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (!mounted) return;
+
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Allow location permission to use nearby discovery.',
+            ),
+            action: permission == LocationPermission.deniedForever
+                ? SnackBarAction(
+                    label: 'Settings',
+                    onPressed: Geolocator.openAppSettings,
+                  )
+                : null,
+          ),
+        );
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition();
+
+      await Api.profile({
+        'latitude': position.latitude,
+        'longitude': position.longitude,
+      });
+
+      if (!mounted) return;
+
+      setState(() => nearby = true);
+      await load();
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Location failed: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.all(18),
+      children: [
+        const Text(
+          'Find your kind of person.',
+          style: TextStyle(
+            fontSize: 27,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 7),
+        const Text(
+          'Search by name, city or people near you.',
+          style: TextStyle(color: OsColors.muted),
+        ),
+        const SizedBox(height: 20),
+        TextField(
+          controller: search,
+          textInputAction: TextInputAction.search,
+          onSubmitted: (_) => load(),
+          decoration: InputDecoration(
+            hintText: 'Search by name',
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: IconButton(
+              onPressed: load,
+              icon: const Icon(Icons.arrow_forward),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: DropdownButtonFormField<String>(
+                value: gender,
+                decoration: const InputDecoration(labelText: 'Show'),
+                items: const [
+                  DropdownMenuItem(
+                    value: 'all',
+                    child: Text('Everyone'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'female',
+                    child: Text('Women'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'male',
+                    child: Text('Men'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value == null) return;
+
+                  setState(() => gender = value);
+                  load();
+                },
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: TextField(
+                controller: cityController,
+                textInputAction: TextInputAction.search,
+                onSubmitted: (_) => load(),
+                decoration: const InputDecoration(
+                  labelText: 'City',
+                  hintText: 'e.g. Lagos',
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: loading ? null : locate,
+          icon: const Icon(Icons.near_me),
+          label: Text(
+            nearby ? 'Refresh nearby people' : 'Find people nearby',
+          ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton(
+          onPressed: loading ? null : load,
+          child: const Text('Search people'),
+        ),
+        const SizedBox(height: 18),
+        if (loading)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: CircularProgressIndicator(),
+            ),
+          )
+        else if (people.isEmpty)
+          const EmptyState(
+            icon: Icons.people_outline,
+            title: 'No people found',
+            text: 'Try another name, city or search preference.',
+          )
+        else
+          ...people.map(
+            (person) => PersonCard(
+              item: person,
+              user: widget.user,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+// ============================================================
+// PERSON CARD AND CONNECTION REQUESTS
+// ============================================================
+
+class PersonCard extends StatelessWidget {
+  final dynamic item;
+  final Map<String, dynamic> user;
+
+  const PersonCard({
+    super.key,
+    required this.item,
+    required this.user,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = item is Map
+        ? Map<String, dynamic>.from(item)
+        : <String, dynamic>{};
+
+    final person = entry['user'] is Map
+        ? Map<String, dynamic>.from(entry['user'])
+        : <String, dynamic>{};
+
+    final name = safeName(person['display_name']);
+    final verified =
+        person['verification_status'] == 'verified';
+    final currentUserVerified =
+        user['verification_status'] == 'verified';
+
+    final city = (person['city'] ?? 'Location unavailable').toString();
+    final distance = entry['distance_km'];
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: OsColors.surface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: OsColors.border.withValues(alpha: .7)),
+      ),
+      child: Row(
+        children: [
+          AvatarPhoto(user: person, radius: 30),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        name,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                    if (verified)
+                      const Padding(
+                        padding: EdgeInsets.only(left: 5),
+                        child: Icon(
+                          Icons.verified,
+                          size: 16,
+                          color: OsColors.purple,
+                        ),
+                      ),
+                  ],
+                ),
+                Text(
+                  distance == null
+                      ? city
+                      : '$city Â· $distance km',
+                  style: const TextStyle(
+                    color: OsColors.muted,
+                    fontSize: 11,
+                  ),
+                ),
+                if ((person['bio'] ?? '').toString().isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      person['bio'].toString(),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: OsColors.muted,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.tonal(
+            onPressed: verified && currentUserVerified
+                ? () async {
+                    try {
+                      final id = person['id'];
+
+                      if (id == null) {
+                        throw Exception(
+                          'This profile has no valid user ID.',
+                        );
+                      }
+
+                      await Api.connect(id);
+
+                      if (!context.mounted) return;
+
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Connection request sent.'),
+                        ),
+                      );
+                    } catch (e) {
+                      if (!context.mounted) return;
+
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('$e')),
+                      );
+                    }
+                  }
+                : () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute<void>(
+                        builder: (_) => VerificationScreen(
+                          user: user,
+                          onChanged: (_) {},
+                        ),
+                      ),
+                    );
+                  },
+            child: Icon(
+              verified && currentUserVerified
+                  ? Icons.favorite
+                  : Icons.lock_outline,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// CHATS AND CONNECTION REQUESTS
+// ============================================================
+
+class Chats extends StatefulWidget {
+  final dynamic myId;
+
+  const Chats({super.key, this.myId});
+
+  @override
+  State<Chats> createState() => _ChatsState();
+}
+
+class _ChatsState extends State<Chats> {
+  List<dynamic> conversations = [];
+  List<dynamic> connections = [];
+
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    if (mounted) {
+      setState(() => loading = true);
+    }
+
+    try {
+      final results = await Future.wait([
+        Api.conversations(),
+        Api.connections(),
+      ]);
+
+      if (!mounted) return;
+
+      setState(() {
+        conversations = results[0];
+        connections = results[1];
+        loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => loading = false);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not refresh chats: $e')),
+      );
+    }
+  }
+
+  Future<void> acceptConnection(dynamic connectionId) async {
+    try {
+      await Api.accept(connectionId);
+      await load();
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Connection accepted.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not accept request: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pending = connections.where((entry) {
+      if (entry is! Map) return false;
+
+      return entry['incoming'] == true &&
+          entry['status'] == 'pending';
+    });
+
+    return RefreshIndicator(
+      onRefresh: load,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(18),
+        children: [
+          const Text(
+            'Your chats',
+            style: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 7),
+          const Text(
+            'Connect first, then start a conversation.',
+            style: TextStyle(color: OsColors.muted),
+          ),
+          const SizedBox(height: 20),
+          if (loading)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(20),
+                child: CircularProgressIndicator(),
+              ),
+            ),
+          if (pending.isNotEmpty) ...[
+            const Text(
+              'Connection requests',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(height: 10),
+            ...pending.map((entry) {
+              final connection = Map<String, dynamic>.from(entry as Map);
+
+              final person = connection['user'] is Map
+                  ? Map<String, dynamic>.from(connection['user'])
+                  : <String, dynamic>{};
+
+              final name = safeName(person['display_name']);
+
+              return Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: OsColors.surface,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Row(
+                  children: [
+                    AvatarPhoto(user: person, radius: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        '$name wants to connect',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () =>
+                          acceptConnection(connection['id']),
+                      child: const Text('Accept'),
+                    ),
+                  ],
+                ),
+              );
+            }),
+            const SizedBox(height: 15),
+          ],
+          const Text(
+            'Messages',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...conversations.map((entry) {
+            final conversation = entry is Map
+                ? Map<String, dynamic>.from(entry)
+                : <String, dynamic>{};
+
+            final person = conversation['user'] is Map
+                ? Map<String, dynamic>.from(conversation['user'])
+                : <String, dynamic>{};
+
+            final name = safeName(person['display_name']);
+            final lastMessage = conversation['last_message'];
+
+            String preview = 'Start the conversation';
+
+            if (lastMessage is Map) {
+              preview = (lastMessage['body'] ??
+                      'Start the conversation')
+                  .toString();
+            }
+
+            return ListTile(
+              contentPadding: const EdgeInsets.symmetric(vertical: 4),
+              leading: AvatarPhoto(user: person, radius: 25),
+              title: Text(
+                name,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              subtitle: Text(
+                preview,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                final conversationId = conversation['id'];
+
+                if (conversationId == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Invalid conversation.'),
+                    ),
+                  );
+                  return;
+                }
+
+                Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => ChatScreen(
+                      conversationId: conversationId,
+                      person: person,
+                      myId: widget.myId,
+                    ),
+                  ),
+                ).then((_) => load());
+              },
+            );
+          }),
+          if (!loading && conversations.isEmpty && pending.isEmpty)
+            const EmptyState(
+              icon: Icons.chat_bubble_outline,
+              title: 'No chats yet',
+              text: 'Discover people and send connection requests. '
+                  'Once a request is accepted, your conversation '
+                  'can appear here.',
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// PROFILE
+// ============================================================
+
+class Profile extends StatefulWidget {
+  final Map<String, dynamic> user;
+  final void Function(Map<String, dynamic>) onChanged;
+  final VoidCallback onLogout;
+
+  const Profile({
+    super.key,
+    required this.user,
+    required this.onChanged,
+    required this.onLogout,
+  });
+
+  @override
+  State<Profile> createState() => _ProfileState();
+}
+
+class _ProfileState extends State<Profile> {
+  late Map<String, dynamic> u;
+
+  final bio = TextEditingController();
+  final city = TextEditingController();
+
+  bool hidden = false;
+  bool saving = false;
+  bool uploadingPhoto = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _applyUser(widget.user);
+  }
+
+  @override
+  void didUpdateWidget(covariant Profile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.user != widget.user) {
+      _applyUser(widget.user);
+    }
+  }
+
+  void _applyUser(Map<String, dynamic> value) {
+    u = Map<String, dynamic>.from(value);
+    bio.text = (u['bio'] ?? '').toString();
+    city.text = (u['city'] ?? '').toString();
+    hidden = u['photos_hidden'] == true;
+  }
+
+  @override
+  void dispose() {
+    bio.dispose();
+    city.dispose();
+    super.dispose();
+  }
+
+  void _message(String message) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  Future<void> save() async {
+    if (saving) return;
+
+    setState(() => saving = true);
+
+    try {
+      final updated = await Api.profile({
+        'bio': bio.text.trim(),
+        'city': city.text.trim(),
+        'photos_hidden': hidden,
+      });
+
+      if (!mounted) return;
+
+      setState(() {
+        u = Map<String, dynamic>.from(updated);
+        saving = false;
+      });
+
+      widget.onChanged(updated);
+      _message('Profile saved.');
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => saving = false);
+      _message('Could not save profile: $e');
+    }
+  }
+
+  Future<void> photo() async {
+    if (uploadingPhoto) return;
+
+    try {
+      final selected = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 88,
+      );
+
+      if (selected == null || !mounted) return;
+
+      setState(() => uploadingPhoto = true);
+
+      final uploaded = await Api.upload(
+        File(selected.path),
+        'profile',
+        selected.mimeType ?? 'image/jpeg',
+      );
+
+      final objectKey = uploaded['object_key']?.toString();
+
+      if (objectKey == null || objectKey.isEmpty) {
+        throw Exception('Upload did not return a photo key.');
+      }
+
+      final updated = await Api.profile({
+        'profile_photo_key': objectKey,
+      });
+
+      if (!mounted) return;
+
+      setState(() {
+        u = Map<String, dynamic>.from(updated);
+        uploadingPhoto = false;
+      });
+
+      widget.onChanged(updated);
+
+      _message(
+        'Photo updated. Your verification status is controlled '
+        'by the server.',
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => uploadingPhoto = false);
+      _message('Could not update photo: $e');
+    }
+  }
+
+  Future<void> removePhoto() async {
+    try {
+      final updated = await Api.profile({
+        'profile_photo_key': null,
+      });
+
+      if (!mounted) return;
+
+      setState(() => u = Map<String, dynamic>.from(updated));
+
+      widget.onChanged(updated);
+      _message('Profile photo removed.');
+    } catch (e) {
+      if (!mounted) return;
+
+      _message('Could not remove photo: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final displayName = safeName(u['display_name']);
+    final avatarLetter = displayName.isEmpty
+        ? 'O'
+        : displayName[0].toUpperCase();
+
+    final verified = u['verification_status'] == 'verified';
+    final hasPhoto = u['profile_photo_key'] != null;
+
+    return ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        const Text(
+          'Your profile',
+          style: TextStyle(
+            fontSize: 28,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 18),
+        Center(
+          child: Stack(
+            alignment: Alignment.bottomRight,
+            children: [
+              SizedBox(
+                width: 116,
+                height: 116,
+                child: hasPhoto
+                    ? AvatarPhoto(
+                        user: u,
+                        radius: 58,
+                      )
+                    : CircleAvatar(
+                        radius: 58,
+                        backgroundColor: OsColors.surface2,
+                        child: Text(
+                          avatarLetter,
+                          style: const TextStyle(
+                            fontSize: 34,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+              ),
+              IconButton.filled(
+                onPressed: uploadingPhoto ? null : photo,
+                icon: uploadingPhoto
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                        ),
+                      )
+                    : const Icon(Icons.camera_alt),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 15),
+        Center(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(
+                  displayName,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 21,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              if (verified)
+                const Padding(
+                  padding: EdgeInsets.only(left: 5),
+                  child: Icon(
+                    Icons.verified,
+                    color: OsColors.purple,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 5),
+        Center(
+          child: Text(
+            (u['verification_status'] ?? 'unverified')
+                .toString()
+                .toUpperCase(),
+            style: const TextStyle(
+              color: OsColors.muted,
+              fontSize: 10,
+              letterSpacing: 1,
+            ),
+          ),
+        ),
+        const SizedBox(height: 25),
+        TextField(
+          controller: city,
+          maxLength: 100,
+          decoration: const InputDecoration(
+            labelText: 'City',
+            prefixIcon: Icon(Icons.location_city),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: bio,
+          maxLength: 500,
+          maxLines: 4,
+          decoration: const InputDecoration(
+            labelText: 'About you',
+            alignLabelWithHint: true,
+            prefixIcon: Icon(Icons.edit_note),
+          ),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: hidden,
+          onChanged: (value) => setState(() => hidden = value),
+          title: const Text('Hide my profile photo'),
+          subtitle: const Text(
+            'Choose whether your profile photo should be hidden. '
+            'Actual visibility must also be enforced by the backend.',
+            style: TextStyle(
+              color: OsColors.muted,
+              fontSize: 11,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: saving ? null : save,
+          child: saving
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                  ),
+                )
+              : const Text('Save profile'),
+        ),
+        if (hasPhoto) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: removePhoto,
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('Remove profile photo'),
+          ),
+        ],
+        const SizedBox(height: 8),
+        OutlinedButton(
+          onPressed: widget.onLogout,
+          child: const Text('Sign out'),
+        ),
+        const SizedBox(height: 25),
+        const Text(
+          'Safety',
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        const SizedBox(height: 7),
+        const Text(
+          'Never send money to someone you have only met online. '
+          'Do not share passwords, private verification photos, '
+          'or sensitive personal information.',
+          style: TextStyle(
+            color: OsColors.muted,
+            height: 1.45,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ============================================================
+// AVATAR PHOTO
+// ============================================================
+
+class AvatarPhoto extends StatefulWidget {
+  final Map<String, dynamic> user;
+  final double radius;
+
+  const AvatarPhoto({
+    super.key,
+    required this.user,
+    required this.radius,
+  });
+
+  @override
+  State<AvatarPhoto> createState() => _AvatarPhotoState();
+}
+
+class _AvatarPhotoState extends State<AvatarPhoto> {
+  String? url;
+  bool failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    loadPhoto();
+  }
+
+  @override
+  void didUpdateWidget(covariant AvatarPhoto oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.user['profile_photo_key'] !=
+        widget.user['profile_photo_key']) {
+      url = null;
+      failed = false;
+      loadPhoto();
+    }
+  }
+
+  Future<void> loadPhoto() async {
+    final key = widget.user['profile_photo_key']?.toString();
+
+    if (key == null || key.isEmpty) return;
+
+    try {
+      final result = await Api.mediaUrl(key);
+
+      if (!mounted) return;
+
+      setState(() => url = result);
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() => failed = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = safeName(widget.user['display_name']);
+    final initial = name.isEmpty ? 'O' : name[0].toUpperCase();
+
+    return CircleAvatar(
+      radius: widget.radius,
+      backgroundColor: OsColors.surface2,
+      backgroundImage: url == null || failed
+          ? null
+          : NetworkImage(url!),
+      child: url == null || failed
+          ? Text(
+              initial,
+              style: const TextStyle(
+                fontWeight: FontWeight.w800,
+              ),
+            )
+          : null,
+    );
+  }
+}
+
+// ============================================================
+// EMPTY STATE
+// ============================================================
+
+class EmptyState extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String text;
+
+  const EmptyState({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.text,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: OsColors.surface,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        children: [
+          Icon(
+            icon,
+            size: 38,
+            color: OsColors.purple,
+          ),
+          const SizedBox(height: 10),
+          Text(
+            title,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontWeight: FontWeight.w900,
+              fontSize: 18,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            text,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              color: OsColors.muted,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// SAFE USER DATA HELPERS
+// ============================================================
+
+String safeName(dynamic value) {
+  final name = (value ?? 'OS Member').toString().trim();
+
+  return name.isEmpty ? 'OS Member' : name;
+}
+
