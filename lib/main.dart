@@ -143,7 +143,9 @@ class _EntryState extends State<Entry> with WidgetsBindingObserver {
 
   Future<void> logout() async {
     _inactivityTimer?.cancel();
-    await Api.logout();
+    // Keep the saved session when fingerprint login is on, so the login
+    // screen keeps showing just the fingerprint icon after signing out.
+    await Api.logout(preserveBiometricSession: true);
     if (mounted) setState(() => user = null);
   }
 

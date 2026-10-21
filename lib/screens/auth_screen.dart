@@ -571,13 +571,34 @@ class _AuthState extends State<AuthScreen> {
                             controlAffinity: ListTileControlAffinity.leading,
                           ),
                           if (biometricEnabled) ...[
-                            const SizedBox(height: 4),
-                            OsButton(
-                              kind: OsBtnKind.outline,
-                              icon: Icons.fingerprint_rounded,
-                              label: 'Use fingerprint',
-                              onPressed: busy ? null : _loginWithBiometric,
+                            const SizedBox(height: 16),
+                            Center(
+                              child: Opacity(
+                                opacity: busy ? .5 : 1,
+                                child: OsPressable(
+                                  scale: .9,
+                                  onTap: busy ? null : _loginWithBiometric,
+                                  child: Container(
+                                    width: 76,
+                                    height: 76,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      gradient: OsColors.brandGradient,
+                                      border: Border.all(color: Colors.white.withValues(alpha: .18)),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: OsColors.purpleDeep.withValues(alpha: .45),
+                                          blurRadius: 22,
+                                          offset: const Offset(0, 8),
+                                        ),
+                                      ],
+                                    ),
+                                    child: const Icon(Icons.fingerprint_rounded, color: Colors.white, size: 42),
+                                  ),
+                                ),
+                              ),
                             ),
+                            const SizedBox(height: 4),
                           ],
                           Align(alignment: Alignment.centerRight, child: TextButton(onPressed: busy ? null : resetPassword, child: const Text('Forgot password?'))),
                         ],

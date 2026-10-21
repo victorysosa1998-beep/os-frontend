@@ -50,8 +50,9 @@ class Api {
     // On inactivity timeout, keep the encrypted token only when biometric login is enabled.
     final prefs = await SharedPreferences.getInstance();
     final biometricEnabled = prefs.getBool('os_biometric_enabled') ?? false;
+    // Always stop push notifications for a signed-out device.
+    try { await unregisterPushToken(); } catch (_) {}
     if (!preserveBiometricSession || !biometricEnabled) {
-      try { await unregisterPushToken(); } catch (_) {}
       await _secureStorage.delete(key: 'os_token');
       await prefs.remove('os_token');
       if (!preserveBiometricSession) await prefs.setBool('os_biometric_enabled', false);

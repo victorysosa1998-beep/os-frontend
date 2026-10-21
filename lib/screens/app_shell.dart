@@ -1,4 +1,4 @@
-import 'dart:io';
+﻿import 'dart:io';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -379,7 +379,7 @@ class _ShellState extends State<AppShell> {
       return AdminScreen(user: user, onLogout: widget.onLogout);
     }
 
-    // Tabs: Feed · Discover · Chats · Features · You. Features is a first-class
+    // Tabs: Feed Â· Discover Â· Chats Â· Features Â· You. Features is a first-class
     // tab, so nothing important is hidden inside Settings any more.
     final pages = <Widget>[
       Feed(key: const PageStorageKey('feed'), user: user, onGoTab: (i) => setState(() => tab = i)),
@@ -865,7 +865,7 @@ class _ContactAction extends StatelessWidget {
 class Feed extends StatefulWidget {
   final Map<String, dynamic> user;
 
-  /// Lets the Get started card jump to another tab (0 feed … 4 you).
+  /// Lets the Get started card jump to another tab (0 feed â€¦ 4 you).
   final ValueChanged<int>? onGoTab;
 
   const Feed({super.key, required this.user, this.onGoTab});
@@ -900,10 +900,7 @@ class _FeedState extends State<Feed> {
       setState(() {
         // The status timeline is for other people; your own content remains
         // available from your profile.
-        posts = result
-            .where((item) =>
-                item is Map && !_belongsToCurrentUser(item, widget.user))
-            .toList();
+        posts = result.where((item) => item is Map).toList();
         loading = false;
       });
     } catch (e) {
@@ -2187,7 +2184,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                             '${author['city']}',
                           if ('${author['gender'] ?? ''}'.trim().isNotEmpty)
                             '${author['gender']}',
-                        ].join(' · '),
+                        ].join(' Â· '),
                         style: const TextStyle(
                           color: OsColors.muted,
                           fontSize: 12,
@@ -3978,7 +3975,7 @@ class _ProfileState extends State<Profile> {
         const SizedBox(height: 18),
         OsButton(
           icon: Icons.check_rounded,
-          label: saving ? 'Saving changes…' : 'Save changes',
+          label: saving ? 'Saving changesâ€¦' : 'Save changes',
           busy: saving,
           height: 56,
           onPressed: save,
@@ -4378,12 +4375,12 @@ class _ProfilePhotoViewerState extends State<ProfilePhotoViewer> {
   }
 }
 
-/// "Lagos · 12 km", "Lagos · <1 km", or just the city when no distance.
+/// "Lagos Â· 12 km", "Lagos Â· <1 km", or just the city when no distance.
 String distanceLabel(String city, dynamic distance) {
   final d = double.tryParse('${distance ?? ''}');
   if (d == null) return city;
   final text = d < 1 ? '<1 km' : (d < 10 ? '${d.toStringAsFixed(1)} km' : '${d.round()} km');
-  return '$city · $text';
+  return '$city Â· $text';
 }
 
 class BlurredProfileThumb extends StatefulWidget {
@@ -4531,7 +4528,7 @@ class _OsFeatureTourDialogState extends State<_OsFeatureTourDialog> {
                       }
                     },
                     icon: Icon(_index == _slides.length - 1 ? Icons.rocket_launch_rounded : Icons.arrow_forward_rounded),
-                    label: Text(_index == _slides.length - 1 ? 'Let’s explore OS' : 'Next feature'),
+                    label: Text(_index == _slides.length - 1 ? 'Letâ€™s explore OS' : 'Next feature'),
                     style: FilledButton.styleFrom(minimumSize: const Size(0, 50)),
                   )),
                 ]),
@@ -4564,3 +4561,4 @@ class _TourArtwork extends StatelessWidget {
   Widget build(BuildContext context) =>
       CartoonSceneView(scene: slide.scene, borderRadius: BorderRadius.zero);
 }
+
