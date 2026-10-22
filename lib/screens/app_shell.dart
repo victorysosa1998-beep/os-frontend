@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:os_dating/screens/Extras_screens.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
 import '../services/api.dart';
@@ -379,7 +380,7 @@ class _ShellState extends State<AppShell> {
       return AdminScreen(user: user, onLogout: widget.onLogout);
     }
 
-    // Tabs: Feed Â· Discover Â· Chats Â· Features Â· You. Features is a first-class
+    // Tabs: Feed · Discover · Chats · Features · You. Features is a first-class
     // tab, so nothing important is hidden inside Settings any more.
     final pages = <Widget>[
       Feed(key: const PageStorageKey('feed'), user: user, onGoTab: (i) => setState(() => tab = i)),
@@ -479,6 +480,127 @@ class _ShellState extends State<AppShell> {
             ),
     );
   }
+}
+
+enum LegalDocumentKind { terms, privacy }
+
+/// In-app legal pages are available immediately; configure APP_WEBSITE_URL
+/// below when the production website and published policy URLs are ready.
+const String appPrivacyPolicyUrl = '${Api.baseUrl}/privacy-policy';
+const String appTermsUrl = '${Api.baseUrl}/terms';
+
+class LegalDocumentScreen extends StatelessWidget {
+  final LegalDocumentKind kind;
+  const LegalDocumentScreen({super.key, required this.kind});
+
+  @override
+  Widget build(BuildContext context) {
+    final privacy = kind == LegalDocumentKind.privacy;
+    final title = privacy ? 'Privacy Policy' : 'Terms of Service';
+    final sections = privacy ? const <(String, String)>[
+      ('Information you provide', 'The app may process account details, profile information, posts, messages, photos, voice content, preferences, verification status, and support or safety reports that you submit.'),
+      ('How information is used', 'Information is used to operate profiles, discovery, messaging, safety tools, verification, account support, and to protect the service from abuse.'),
+      ('Visibility and sharing', 'Profile fields, posts, and messages may be visible to other members according to the app features and your settings. Do not share information you do not want another member to see.'),
+      ('Location and permissions', 'Location access should be requested only for location-based features such as nearby discovery. You can deny permission and use features that do not require it.'),
+      ('Retention and deletion', 'Some information remains while your account is active or as needed for safety, security, legal compliance, and dispute handling. Deleting a post or message may not remove copies already seen, saved, reported, or captured by another user.'),
+      ('Your choices and contact', 'Manage available privacy controls in Settings. For privacy or support requests, contact sosatechnologies.support@gmail.com. Public policy: https://os-backend-cod3.onrender.com/privacy-policy. Account deletion: https://os-backend-cod3.onrender.com/account-deletion.'),
+    ] : const <(String, String)>[
+      ('Eligibility and respectful use', 'Use the service only if you meet the applicable age requirement and can legally agree to these terms. Be respectful, truthful, and lawful when interacting with other members.'),
+      ('Your content', 'You are responsible for content you upload and must have the rights and permissions needed to share it. Do not post unlawful, threatening, exploitative, harassing, fraudulent, or non-consensual content.'),
+      ('Dating and user safety', 'Profiles and messages are provided by members and may not be independently verified in every respect. Use caution when meeting people, never send money to someone you have only met online, and report abusive or suspicious conduct.'),
+      ('Moderation and account action', 'The service may review reports, remove content, restrict features, or suspend accounts to protect members, enforce these terms, or comply with law.'),
+      ('Availability and changes', 'Features may change or be unavailable at times. The service may update these terms; material changes should be communicated through an appropriate in-app or website notice.'),
+      ('Child safety', 'OS is for adults 18 and older. Child sexual abuse and exploitation, grooming, and sexualization of minors are strictly prohibited. Read the Child Safety Standards at https://os-backend-cod3.onrender.com/child-safety.'),
+      ('Contact', 'SosaTechnologies support: sosatechnologies.support@gmail.com. Privacy Policy: https://os-backend-cod3.onrender.com/privacy-policy. Terms: https://os-backend-cod3.onrender.com/terms.'),
+    ];
+    return Scaffold(appBar: AppBar(title: Text(title)), body: ListView(padding: const EdgeInsets.all(18), children: [
+      Text(title, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
+      const SizedBox(height: 8),
+      Text('Please review this document. The app owner must verify that it matches actual practices before release.', style: TextStyle(color: OsColors.muted)),
+      const SizedBox(height: 16),
+      for (final section in sections) Padding(padding: const EdgeInsets.only(bottom: 18), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(section.$1, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)), const SizedBox(height: 6), Text(section.$2, style: const TextStyle(height: 1.45))])),
+      if ((privacy ? appPrivacyPolicyUrl : appTermsUrl).isNotEmpty) OutlinedButton.icon(onPressed: () async { final uri = Uri.tryParse(privacy ? appPrivacyPolicyUrl : appTermsUrl); if (uri != null && uri.hasScheme) await launchUrl(uri, mode: LaunchMode.externalApplication); }, icon: const Icon(Icons.open_in_new), label: Text(privacy ? 'Open Privacy Policy' : 'Open Terms of Service'))
+      else const Text('Website link will appear here once the production website URL is configured.', style: TextStyle(color: OsColors.muted)),
+    ]));
+  }
+}
+
+// ============================================================
+// MY POSTS
+// ============================================================
+
+class MyPostsScreen extends StatefulWidget {
+  final int userId;
+  const MyPostsScreen({super.key, required this.userId});
+  @override
+  State<MyPostsScreen> createState() => _MyPostsScreenState();
+}
+
+class _MyPostsScreenState extends State<MyPostsScreen> {
+  List<dynamic> posts = [];
+  bool loading = true;
+  final Set<int> deleting = {};
+
+  @override
+  void initState() { super.initState(); load(); }
+
+  Future<void> load() async {
+    if (mounted) setState(() => loading = true);
+    try {
+      final result = await Api.userPosts(widget.userId);
+      if (mounted) setState(() { posts = result; loading = false; });
+    } catch (e) {
+      if (mounted) setState(() => loading = false);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not load your posts. ${Api.friendlyError(e)}')));
+    }
+  }
+
+  Future<void> removePost(Map<String, dynamic> post) async {
+    final id = int.tryParse('${post['id'] ?? ''}');
+    if (id == null) return;
+    final confirm = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('Delete this post?'),
+      content: const Text('This removes the post for everyone. This cannot be undone.'),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete'))],
+    ));
+    if (confirm != true) return;
+    setState(() => deleting.add(id));
+    try {
+      await Api.deletePost(id);
+      if (!mounted) return;
+      setState(() { posts.removeWhere((raw) => raw is Map && int.tryParse('${raw['id']}') == id); deleting.remove(id); });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Post deleted.')));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => deleting.remove(id));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not delete post. ${Api.friendlyError(e)}')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('My posts'), actions: [IconButton(onPressed: load, icon: const Icon(Icons.refresh))]),
+    body: loading ? const Center(child: CircularProgressIndicator()) : posts.isEmpty
+      ? const Center(child: Padding(padding: EdgeInsets.all(24), child: Text('You have not shared any posts yet.')))
+      : RefreshIndicator(onRefresh: load, child: ListView.builder(padding: const EdgeInsets.all(14), itemCount: posts.length,
+        itemBuilder: (context, index) {
+          final post = mapOf(posts[index]);
+          final text = '${post['text'] ?? post['body'] ?? ''}'.trim();
+          final id = int.tryParse('${post['id'] ?? ''}') ?? -1;
+          final media = '${post['media_key'] ?? ''}'.trim();
+          return Card(margin: const EdgeInsets.only(bottom: 12), child: Padding(padding: const EdgeInsets.all(14), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (text.isNotEmpty) Text(text, style: const TextStyle(fontSize: 15)),
+            if (media.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 8), child: Text('Media attached', style: TextStyle(color: OsColors.muted))),
+            const SizedBox(height: 8),
+            Align(alignment: Alignment.centerRight, child: TextButton.icon(
+              onPressed: deleting.contains(id) ? null : () => removePost(post),
+              icon: deleting.contains(id) ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.delete_outline, color: Colors.red),
+              label: const Text('Delete post'),
+            )),
+          ])));
+        })),
+  );
 }
 
 // ============================================================
@@ -865,7 +987,7 @@ class _ContactAction extends StatelessWidget {
 class Feed extends StatefulWidget {
   final Map<String, dynamic> user;
 
-  /// Lets the Get started card jump to another tab (0 feed â€¦ 4 you).
+  /// Lets the Get started card jump to another tab (0 feed … 4 you).
   final ValueChanged<int>? onGoTab;
 
   const Feed({super.key, required this.user, this.onGoTab});
@@ -900,7 +1022,10 @@ class _FeedState extends State<Feed> {
       setState(() {
         // The status timeline is for other people; your own content remains
         // available from your profile.
-        posts = result.where((item) => item is Map).toList();
+        posts = result
+            .where((item) =>
+                item is Map && !_belongsToCurrentUser(item, widget.user))
+            .toList();
         loading = false;
       });
     } catch (e) {
@@ -1840,6 +1965,52 @@ class _PostGridTileState extends State<PostGridTile> {
   int get likesCount =>
       int.tryParse('${post['like_count'] ?? post['likes_count'] ?? 0}') ?? 0;
 
+  bool get isMine {
+    final author = mapOf(post['author']);
+    final myId = currentUserId.trim();
+    final authorId =
+        '${author['id'] ?? author['user_id'] ?? post['user_id'] ?? post['author_id'] ?? ''}'.trim();
+    return myId.isNotEmpty && authorId.isNotEmpty && myId == authorId;
+  }
+
+  Future<void> deleteMyPost() async {
+    if (!isMine || postId <= 0) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete your status?'),
+        content: const Text('This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await Api.deletePost(postId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Status deleted.')),
+      );
+      await widget.onChanged?.call();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not delete status. ${Api.friendlyError(e)}')),
+      );
+    }
+  }
+
   Future<void> toggleLike() async {
     if (liking || postId <= 0) return;
 
@@ -1975,6 +2146,15 @@ class _PostGridTileState extends State<PostGridTile> {
                       ),
                     ),
                   ),
+                  if (isMine)
+                    IconButton(
+                      tooltip: 'Delete my status',
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 30, minHeight: 32),
+                      onPressed: deleteMyPost,
+                      icon: const Icon(Icons.delete_outline, size: 17, color: Colors.redAccent),
+                    ),
                   IconButton(
                     tooltip: likedByMe ? 'Unlike post' : 'Like post',
                     visualDensity: VisualDensity.compact,
@@ -2049,6 +2229,77 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
 
   int get likesCount =>
       int.tryParse('${post['like_count'] ?? post['likes_count'] ?? 0}') ?? 0;
+
+  bool get isMine {
+    final author = mapOf(post['author']);
+    final myId = currentUserId.trim();
+    final authorId =
+        '${author['id'] ?? author['user_id'] ?? post['user_id'] ?? post['author_id'] ?? ''}'.trim();
+    return myId.isNotEmpty && authorId.isNotEmpty && myId == authorId;
+  }
+
+  Future<void> reportPost() async {
+    if (isMine || postId <= 0) return;
+    final reasonController = TextEditingController();
+    try {
+      final reason = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Report status'),
+          content: TextField(controller: reasonController, minLines: 2, maxLines: 5, maxLength: 500, decoration: const InputDecoration(hintText: 'Tell us why this status should be reviewed', border: OutlineInputBorder())),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(onPressed: () { final value = reasonController.text.trim(); if (value.length < 3) { ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Please enter at least 3 characters.'))); return; } Navigator.pop(ctx, value); }, child: const Text('Submit report')),
+          ],
+        ),
+      );
+      if (reason == null || !mounted) return;
+      await Api.reportContent(targetType: 'post', targetId: postId, reason: reason);
+      if (mounted) message('Report submitted for review.');
+    } catch (e) {
+      if (mounted) message('Could not submit report: ${Api.friendlyError(e)}');
+    } finally {
+      reasonController.dispose();
+    }
+  }
+
+  Future<void> deleteMyPost() async {
+    if (!isMine || postId <= 0) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete your status?'),
+        content: const Text('This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await Api.deletePost(postId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Status deleted.')),
+      );
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not delete status. ${Api.friendlyError(e)}')),
+      );
+    }
+  }
 
   Future<void> toggleLike() async {
     if (liking || postId <= 0) return;
@@ -2142,11 +2393,15 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     final text = '${post['text'] ?? ''}';
     final mediaKey = '${post['media_key'] ?? ''}';
     final hasMedia = mediaKey.isNotEmpty;
-    final isMine = currentUserId.isNotEmpty &&
-        '${author['id'] ?? post['user_id'] ?? ''}' == currentUserId;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Post')),
+      appBar: AppBar(
+        title: const Text('Post'),
+        actions: [
+          if (!isMine) IconButton(tooltip: 'Report status', onPressed: reportPost, icon: const Icon(Icons.flag_outlined)),
+          if (isMine) IconButton(tooltip: 'Delete status', onPressed: deleteMyPost, icon: const Icon(Icons.delete_outline)),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 28),
         children: [
@@ -2184,7 +2439,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                             '${author['city']}',
                           if ('${author['gender'] ?? ''}'.trim().isNotEmpty)
                             '${author['gender']}',
-                        ].join(' Â· '),
+                        ].join(' · '),
                         style: const TextStyle(
                           color: OsColors.muted,
                           fontSize: 12,
@@ -2239,6 +2494,13 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                 '$likesCount ${likesCount == 1 ? 'like' : 'likes'}',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
+              const Spacer(),
+              if (isMine)
+                IconButton(
+                  tooltip: 'Delete my status',
+                  onPressed: deleteMyPost,
+                  icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                ),
             ],
           ),
           const Divider(height: 26),
@@ -3071,37 +3333,39 @@ class PersonGridCard extends StatelessWidget {
     final online = isOnline(person);
 
     VoidCallback? onPressed;
-    IconData buttonIcon;
-    String buttonLabel;
+    IconData buttonIcon = Icons.inbox_outlined;
+    String buttonLabel = 'Inbox';
 
-    if (!myVerified) {
-      // YOU are not verified: send you to verification.
-      buttonIcon = Icons.lock_outline;
-      buttonLabel = 'Verify to connect';
-      onPressed = () => Navigator.push(
-            context,
-            MaterialPageRoute<void>(
-              builder: (_) => Scaffold(
-                appBar: AppBar(
-                  title: const Text('Verify your identity'),
-                ),
-                body: VerificationScreen(
-                  user: user,
-                  onChanged: (_) {},
-                ),
-              ),
-            ),
-          );
-    } else if (!verified) {
-      // THEY are not verified: cannot connect.
-      buttonIcon = Icons.shield_outlined;
-      buttonLabel = 'Not verified';
-      onPressed = null;
-    } else {
-      buttonIcon = Icons.favorite_border;
-      buttonLabel = 'Connect';
-      onPressed = () => _connect(context, person);
-    }
+    onPressed = () async {
+      if (!myVerified) {
+        Navigator.push(context, MaterialPageRoute<void>(builder: (_) => Scaffold(
+          appBar: AppBar(title: const Text('Verify your identity')),
+          body: VerificationScreen(user: user, onChanged: (_) {}),
+        )));
+        return;
+      }
+      if (!verified) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This member must verify their profile before you can message them.')),
+        );
+        return;
+      }
+      try {
+        final result = await Api.openConversation(int.parse('${person['id']}'));
+        final conversationId = int.tryParse('${result['id'] ?? result['conversation_id'] ?? ''}');
+        if (conversationId == null) throw Exception('The server did not return a conversation ID.');
+        if (!context.mounted) return;
+        await Navigator.push(context, MaterialPageRoute<void>(builder: (_) => ChatScreen(
+          conversationId: conversationId,
+          person: Map<String, dynamic>.from(person),
+          myId: int.tryParse(currentUserId),
+          profileBuilder: (id, profile) => PublicProfileScreen(userId: id, initialUser: profile),
+        )));
+      } catch (e) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not open inbox. ${Api.friendlyError(e)}')));
+      }
+    };
 
     return Container(
       decoration: BoxDecoration(
@@ -3919,6 +4183,18 @@ class _ProfileState extends State<Profile> {
             ]),
           ]),
         ),
+        sectionLabel('Your content'),
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.grid_on_rounded),
+            title: const Text('My posts'),
+            subtitle: const Text('View and delete posts you have shared'),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => Navigator.push(context, MaterialPageRoute<void>(
+              builder: (_) => MyPostsScreen(userId: int.tryParse(currentUserId) ?? 0),
+            )),
+          ),
+        ),
         sectionLabel('Voice intro'),
         VoiceBioCard(userId: int.tryParse(currentUserId) ?? 0, editable: true),
         sectionLabel('Profile information'),
@@ -3975,7 +4251,7 @@ class _ProfileState extends State<Profile> {
         const SizedBox(height: 18),
         OsButton(
           icon: Icons.check_rounded,
-          label: saving ? 'Saving changesâ€¦' : 'Save changes',
+          label: saving ? 'Saving changes…' : 'Save changes',
           busy: saving,
           height: 56,
           onPressed: save,
@@ -4021,6 +4297,12 @@ class _ProfileState extends State<Profile> {
             ],
           ]),
         ),
+        sectionLabel('Legal'),
+        Card(child: Column(children: [
+          ListTile(leading: const Icon(Icons.description_outlined), title: const Text('Terms of Service'), trailing: const Icon(Icons.chevron_right), onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const LegalDocumentScreen(kind: LegalDocumentKind.terms)))),
+          const Divider(height: 1),
+          ListTile(leading: const Icon(Icons.privacy_tip_outlined), title: const Text('Privacy Policy'), trailing: const Icon(Icons.chevron_right), onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const LegalDocumentScreen(kind: LegalDocumentKind.privacy)))),
+        ])),
         sectionLabel('Safety'),
         const Text('Never send money to someone you have only met online. Do not share passwords, private verification photos, or sensitive personal information.',
           style: TextStyle(color: OsColors.muted, height: 1.45)),
@@ -4375,12 +4657,12 @@ class _ProfilePhotoViewerState extends State<ProfilePhotoViewer> {
   }
 }
 
-/// "Lagos Â· 12 km", "Lagos Â· <1 km", or just the city when no distance.
+/// "Lagos · 12 km", "Lagos · <1 km", or just the city when no distance.
 String distanceLabel(String city, dynamic distance) {
   final d = double.tryParse('${distance ?? ''}');
   if (d == null) return city;
   final text = d < 1 ? '<1 km' : (d < 10 ? '${d.toStringAsFixed(1)} km' : '${d.round()} km');
-  return '$city Â· $text';
+  return '$city · $text';
 }
 
 class BlurredProfileThumb extends StatefulWidget {
@@ -4528,7 +4810,7 @@ class _OsFeatureTourDialogState extends State<_OsFeatureTourDialog> {
                       }
                     },
                     icon: Icon(_index == _slides.length - 1 ? Icons.rocket_launch_rounded : Icons.arrow_forward_rounded),
-                    label: Text(_index == _slides.length - 1 ? 'Letâ€™s explore OS' : 'Next feature'),
+                    label: Text(_index == _slides.length - 1 ? 'Let’s explore OS' : 'Next feature'),
                     style: FilledButton.styleFrom(minimumSize: const Size(0, 50)),
                   )),
                 ]),
@@ -4561,4 +4843,3 @@ class _TourArtwork extends StatelessWidget {
   Widget build(BuildContext context) =>
       CartoonSceneView(scene: slide.scene, borderRadius: BorderRadius.zero);
 }
-

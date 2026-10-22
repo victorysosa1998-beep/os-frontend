@@ -681,6 +681,14 @@ class Api {
     );
   }
 
+  static Future<void> reportContent({required String targetType, required int targetId, required String reason}) async {
+    await request('POST', '/report/content', body: {
+      'target_type': targetType,
+      'target_id': targetId,
+      'reason': reason,
+    });
+  }
+
 
   // OS dating experience: privacy, compatibility and trust.
   static Future<Map<String, dynamic>> featurePreferences() =>
@@ -722,6 +730,10 @@ class Api {
 
   static Future<List<dynamic>> adminReports() {
     return list('/admin/reports');
+  }
+
+  static Future<Map<String, dynamic>> resolveReport(int reportId, String action) {
+    return request('POST', '/admin/reports/$reportId/resolve', body: {'action': action});
   }
 
   static Future<Map<String, dynamic>> suspend(int userId) {

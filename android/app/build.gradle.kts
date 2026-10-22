@@ -10,7 +10,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.os"
+    namespace = "com.sosatechnologies.osdating"
 
     // Fix Android dependency compatibility warnings
     compileSdk = 36
@@ -26,20 +26,40 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.os"
+        applicationId = "com.sosatechnologies.osdating"
 
         minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+        targetSdk = 36
 
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
 
+    // Release builds must use a private upload key supplied through environment
+    // variables. Never silently sign a Play release with the debug key.
+    signingConfigs {
+        create("release") {
+            val storeFilePath = System.getenv("OS_UPLOAD_STORE_FILE")
+            val storePasswordValue = System.getenv("OS_UPLOAD_STORE_PASSWORD")
+            val keyAliasValue = System.getenv("OS_UPLOAD_KEY_ALIAS")
+            val keyPasswordValue = System.getenv("OS_UPLOAD_KEY_PASSWORD")
+            if (!storeFilePath.isNullOrBlank()) storeFile = file(storeFilePath)
+            if (!storePasswordValue.isNullOrBlank()) storePassword = storePasswordValue
+            if (!keyAliasValue.isNullOrBlank()) keyAlias = keyAliasValue
+            if (!keyPasswordValue.isNullOrBlank()) keyPassword = keyPasswordValue
+        }
+    }
+
     buildTypes {
         release {
-            // Debug signing for local testing only.
-            // Configure a release keystore before publishing.
-            signingConfig = signingConfigs.getByName("debug")
+            // If upload-key variables are missing, Gradle does not fall back to
+            // debug signing. Configure the four OS_UPLOAD_* variables before release.
+            if (System.getenv("OS_UPLOAD_STORE_FILE").isNullOrBlank().not() &&
+                System.getenv("OS_UPLOAD_STORE_PASSWORD").isNullOrBlank().not() &&
+                System.getenv("OS_UPLOAD_KEY_ALIAS").isNullOrBlank().not() &&
+                System.getenv("OS_UPLOAD_KEY_PASSWORD").isNullOrBlank().not()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 }

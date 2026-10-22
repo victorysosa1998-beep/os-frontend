@@ -769,6 +769,27 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     ]);
   }
 
+  Future<void> actOnReport(Map<String, dynamic> report, String action) async {
+    final reportId = int.tryParse('${report['id'] ?? report['report_id'] ?? ''}');
+    if (reportId == null || reportId <= 0) { toast('This report has no valid ID.'); return; }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text({'resolve': 'Resolve report?', 'dismiss': 'Dismiss report?', 'suspend': 'Suspend reported member?'}[action] ?? 'Moderation action'),
+        content: Text({'resolve': 'Mark this report as reviewed and resolved.', 'dismiss': 'Close this report without further action.', 'suspend': 'Suspend the reported member. They may lose access to their account.'}[action] ?? 'Continue?'),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Confirm'))],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await Api.resolveReport(reportId, action);
+      toast(action == 'suspend' ? 'Member suspended and report updated.' : action == 'dismiss' ? 'Report dismissed.' : 'Report resolved.');
+      await loadReports();
+      await load();
+      if (action == 'suspend') await loadMembers();
+    } catch (e) { toast('Moderation action failed: ${Api.friendlyError(e)}'); }
+  }
+
   Widget reportsContent() {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
@@ -782,26 +803,42 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       else if (reports.isEmpty) const EmptyState(icon: Icons.verified_user_outlined, title: 'No reports returned', text: 'There are no reports to display, or the admin reports endpoint returned an empty list.')
       else ...reports.map((raw) {
         final report = mapOf(raw);
-        final reporter = mapOf(report['reporter'] ?? report['reported_by_user']);
-        final reported = mapOf(report['reported_user'] ?? report['user']);
-        final reason = '${report['reason'] ?? report['description'] ?? 'No reason provided'}';
+        final targetType = '${report['target_type'] ?? 'user'}';
+        final reportedId = int.tryParse('${report['reported_user_id'] ?? ''}');
+        final reported = <String, dynamic>{'id': reportedId, 'display_name': report['reported_user_name'] ?? 'User #${reportedId ?? 'unknown'}'};
+        final reporterName = '${report['reporter_name'] ?? 'User #${report['reporter_id'] ?? 'unknown'}'}';
+        final reason = '${report['reason'] ?? 'No reason provided'}';
         final id = report['id'] ?? report['report_id'] ?? '—';
+        final status = '${report['status'] ?? 'open'}';
+        final open = !['resolved', 'dismissed'].contains(status.toLowerCase());
         return Container(
           margin: const EdgeInsets.only(bottom: 10),
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(color: OsColors.surface, borderRadius: BorderRadius.circular(18)),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [const Icon(Icons.flag_outlined, color: Colors.deepOrange), const SizedBox(width: 8), Expanded(child: Text('Report #$id', style: const TextStyle(fontWeight: FontWeight.w900))), Text('${report['status'] ?? 'Open'}', style: const TextStyle(color: OsColors.muted, fontSize: 12))]),
+            Row(children: [const Icon(Icons.flag_outlined, color: Colors.deepOrange), const SizedBox(width: 8), Expanded(child: Text('Report #$id · ${targetType == 'post' ? 'Status content' : 'Account'}', style: const TextStyle(fontWeight: FontWeight.w900))), Text(status, style: const TextStyle(color: OsColors.muted, fontSize: 12))]),
             const SizedBox(height: 8),
-            Text('Reported member: ${safeName(reported['display_name'] ?? reported['name'])}', style: const TextStyle(fontWeight: FontWeight.w700)),
-            Text('By: ${safeName(reporter['display_name'] ?? reporter['name'])}', style: const TextStyle(color: OsColors.muted, fontSize: 12)),
+            Text('Reported: ${reported['display_name']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text('Reported by: $reporterName', style: const TextStyle(color: OsColors.muted, fontSize: 12)),
             const SizedBox(height: 8),
             Text(reason),
-            const SizedBox(height: 10),
-            Align(alignment: Alignment.centerRight, child: OutlinedButton.icon(onPressed: () => suspendMember(reported), icon: const Icon(Icons.block), label: const Text('Suspend reported member'))),
+            if (targetType == 'post' && '${report['content_snapshot'] ?? ''}'.trim().isNotEmpty) ...[
+              const SizedBox(height: 8),
+              const Text('Reported post snapshot', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
+              Text('${report['content_snapshot']}', maxLines: 5, overflow: TextOverflow.ellipsis),
+              Text('Post ID: ${report['target_id'] ?? 'unknown'}', style: const TextStyle(color: OsColors.muted, fontSize: 12)),
+            ],
+            if (open) ...[
+              const SizedBox(height: 10),
+              Wrap(spacing: 8, runSpacing: 6, alignment: WrapAlignment.end, children: [
+                OutlinedButton(onPressed: () => actOnReport(report, 'dismiss'), child: const Text('Dismiss')),
+                OutlinedButton(onPressed: () => actOnReport(report, 'resolve'), child: const Text('Resolve')),
+                FilledButton.tonalIcon(onPressed: reportedId == null ? null : () => actOnReport(report, 'suspend'), icon: const Icon(Icons.block), label: const Text('Suspend')),
+              ]),
+            ],
           ]),
         );
-      }),
+      })
     ]);
   }
 

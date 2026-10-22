@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:record/record.dart' as rec;
+import 'package:video_player/video_player.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../services/api.dart';
 import '../theme/os_layout.dart';
@@ -40,6 +44,10 @@ class _ChatState extends State<ChatScreen> {
   bool otherTyping = false;
   Map? replyingTo;
   DateTime _lastTypingSent = DateTime.fromMillisecondsSinceEpoch(0);
+  final rec.AudioRecorder _voiceRecorder = rec.AudioRecorder();
+  bool recordingVoice = false;
+  int voiceElapsed = 0;
+  Timer? voiceTimer;
 
   @override
   void initState() {
@@ -60,6 +68,9 @@ class _ChatState extends State<ChatScreen> {
   @override
   void dispose() {
     timer?.cancel();
+    voiceTimer?.cancel();
+    if (recordingVoice) unawaited(_voiceRecorder.cancel());
+    unawaited(_voiceRecorder.dispose());
     input.dispose();
     scroll.dispose();
     super.dispose();
@@ -129,6 +140,65 @@ class _ChatState extends State<ChatScreen> {
       }
     }
     if (mounted) setState(() => sending = false);
+  }
+
+  Future<void> _toggleVoiceNote() async {
+    if (sending) return;
+    if (!recordingVoice) {
+      try {
+        if (!await _voiceRecorder.hasPermission()) {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Allow microphone access to record a voice note.')));
+          return;
+        }
+        final path = '${Directory.systemTemp.path}/os_chat_voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+        await _voiceRecorder.start(
+          const rec.RecordConfig(encoder: rec.AudioEncoder.aacLc, bitRate: 64000, sampleRate: 44100, numChannels: 1),
+          path: path,
+        );
+        if (!mounted) return;
+        setState(() { recordingVoice = true; voiceElapsed = 0; });
+        voiceTimer?.cancel();
+        voiceTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+          if (!mounted) return;
+          setState(() => voiceElapsed++);
+          if (voiceElapsed >= 120) _finishVoiceNote();
+        });
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not start recording: $e')));
+      }
+      return;
+    }
+    await _finishVoiceNote();
+  }
+
+  Future<void> _finishVoiceNote() async {
+    if (!recordingVoice) return;
+    voiceTimer?.cancel();
+    setState(() { recordingVoice = false; sending = true; });
+    try {
+      final path = await _voiceRecorder.stop();
+      if (path == null || voiceElapsed < 2) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Record at least 2 seconds for a voice note.')));
+        return;
+      }
+      final file = File(path);
+      final uploaded = await Api.upload(file, 'voice_note', 'audio/mp4');
+      final key = (uploaded['object_key'] ?? '').toString();
+      if (key.isEmpty) throw Exception('The uploaded voice note is missing its media key.');
+      final body = jsonEncode({'type': 'voice_note', 'key': key, 'duration_seconds': voiceElapsed});
+      await Api.sendMessage(widget.person['id'], body,
+        expiresInSeconds: expirySeconds,
+        replyToMessageId: int.tryParse('${replyingTo?['id'] ?? ''}'));
+      if (mounted) setState(() => replyingTo = null);
+      await load();
+      _toBottom();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(Api.friendlyError(e))));
+    } finally {
+      if (mounted) setState(() => sending = false);
+    }
   }
 
   Future<void> _clearChat() async {
@@ -239,6 +309,15 @@ class _ChatState extends State<ChatScreen> {
   /// Old status notifications were saved with a broken "??" prefix.
   String _cleanBody(String s) => s.replaceFirst(RegExp(r'^\?+\s*'), '');
 
+  String _messagePreview(dynamic raw) {
+    final body = _cleanBody('$raw');
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map && decoded['type'] == 'voice_note') return '🎤 Voice note';
+    } catch (_) {}
+    return body;
+  }
+
   String _expiryLabel(dynamic value) {
     final date = DateTime.tryParse('$value')?.toLocal();
     if (date == null) return '$value';
@@ -282,6 +361,13 @@ class _ChatState extends State<ChatScreen> {
     final kind = (m['kind'] ?? 'text').toString();
     final isStatus = kind == 'status_like' || kind == 'status_reply';
     final body = _cleanBody((m['body'] ?? '').toString());
+    Map<String, dynamic>? voiceNote;
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map && decoded['type'] == 'voice_note' && decoded['key'] is String) {
+        voiceNote = Map<String, dynamic>.from(decoded);
+      }
+    } catch (_) {}
 
     final callLink = RegExp(r'https://meet\.jit\.si/[^\s]+').firstMatch(body)?.group(0);
     return Align(
@@ -313,26 +399,32 @@ class _ChatState extends State<ChatScreen> {
                 for (final raw in ms) {
                   if (raw is Map && int.tryParse('${raw['id']}') == parentId) { parent = raw; break; }
                 }
-                return Container(width: double.infinity, padding: const EdgeInsets.all(8), margin: const EdgeInsets.only(bottom: 7), decoration: BoxDecoration(color: Colors.black.withOpacity(0.18), borderRadius: BorderRadius.circular(8), border: const Border(left: BorderSide(color: OsColors.amber, width: 3))), child: Text(parent == null ? 'Reply to a message' : _cleanBody('${parent['body'] ?? ''}'), maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white70, fontSize: 12)));
+                return Container(width: double.infinity, padding: const EdgeInsets.all(8), margin: const EdgeInsets.only(bottom: 7), decoration: BoxDecoration(color: Colors.black.withOpacity(0.18), borderRadius: BorderRadius.circular(8), border: const Border(left: BorderSide(color: OsColors.amber, width: 3))), child: Text(parent == null ? 'Reply to a message' : _messagePreview(parent['body'] ?? ''), maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white70, fontSize: 12)));
               }),
             ],
             if (isStatus) ...[
               _StatusQuote(message: m, mine: mine, kind: kind),
               const SizedBox(height: 8),
             ],
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: isStatus ? 8 : 0),
-              child: Text(
-                body,
-                style: TextStyle(
-                  height: 1.35,
-                  color: Colors.white,
-                  fontSize: kind == 'status_like' ? 14 : null,
-                  fontWeight:
-                      kind == 'status_like' ? FontWeight.w700 : FontWeight.w400,
+            if (voiceNote != null)
+              _VoiceNoteBubble(
+                mediaKey: voiceNote['key'].toString(),
+                durationSeconds: int.tryParse('${voiceNote['duration_seconds'] ?? 0}') ?? 0,
+                mine: mine,
+              )
+            else
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: isStatus ? 8 : 0),
+                child: Text(
+                  body,
+                  style: TextStyle(
+                    height: 1.35,
+                    color: Colors.white,
+                    fontSize: kind == 'status_like' ? 14 : null,
+                    fontWeight: kind == 'status_like' ? FontWeight.w700 : FontWeight.w400,
+                  ),
                 ),
               ),
-            ),
             if (m['expires_at'] != null || m['my_expires_at'] != null)
               Padding(padding: const EdgeInsets.only(top: 5), child: Text(
                 'Sender’s timer: ${m['expires_at'] == null ? 'indefinite' : _expiryLabel(m['expires_at'])}\nYour copy: ${m['my_expires_at'] == null ? 'indefinite' : _expiryLabel(m['my_expires_at'])}',
@@ -434,7 +526,7 @@ class _ChatState extends State<ChatScreen> {
               border: Border(top: BorderSide(color: OsColors.border)),
             ),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              if (replyingTo != null) Container(width: double.infinity, margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), decoration: BoxDecoration(color: OsColors.surface2, borderRadius: BorderRadius.circular(10)), child: Row(children: [Expanded(child: Text('Replying to: ${(replyingTo!['body'] ?? '').toString()}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: OsColors.muted, fontSize: 12))), IconButton(visualDensity: VisualDensity.compact, onPressed: () => setState(() => replyingTo = null), icon: const Icon(Icons.close, size: 18))])),
+              if (replyingTo != null) Container(width: double.infinity, margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), decoration: BoxDecoration(color: OsColors.surface2, borderRadius: BorderRadius.circular(10)), child: Row(children: [Expanded(child: Text('Replying to: ${_messagePreview(replyingTo!['body'] ?? '')}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: OsColors.muted, fontSize: 12))), IconButton(visualDensity: VisualDensity.compact, onPressed: () => setState(() => replyingTo = null), icon: const Icon(Icons.close, size: 18))])),
               Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
               PopupMenuButton<int?>(
                 tooltip: 'Message retention',
@@ -503,6 +595,17 @@ class _ChatState extends State<ChatScreen> {
                 },
                 icon: const Icon(Icons.lightbulb_outline_rounded),
               ),
+              IconButton(
+                tooltip: recordingVoice ? 'Stop and send voice note' : 'Record voice note',
+                onPressed: sending ? null : _toggleVoiceNote,
+                color: recordingVoice ? Colors.redAccent : OsColors.purple,
+                icon: Icon(recordingVoice ? Icons.stop_circle_rounded : Icons.mic_rounded),
+              ),
+              if (recordingVoice)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: Text('${voiceElapsed ~/ 60}:${(voiceElapsed % 60).toString().padLeft(2, '0')}', style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+                ),
               Expanded(
                 child: TextField(
                   controller: input,
@@ -541,6 +644,81 @@ class _ChatState extends State<ChatScreen> {
           ),
         ),
       ])),
+    );
+  }
+}
+
+class _VoiceNoteBubble extends StatefulWidget {
+  final String mediaKey;
+  final int durationSeconds;
+  final bool mine;
+  const _VoiceNoteBubble({required this.mediaKey, required this.durationSeconds, required this.mine});
+
+  @override
+  State<_VoiceNoteBubble> createState() => _VoiceNoteBubbleState();
+}
+
+class _VoiceNoteBubbleState extends State<_VoiceNoteBubble> {
+  VideoPlayerController? _controller;
+  bool loading = false;
+  String? error;
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _togglePlayback() async {
+    try {
+      if (_controller == null) {
+        setState(() { loading = true; error = null; });
+        final url = await Api.mediaUrl(widget.mediaKey);
+        final controller = VideoPlayerController.networkUrl(Uri.parse(url));
+        await controller.initialize();
+        controller.setLooping(false);
+        controller.addListener(() { if (mounted) setState(() {}); });
+        _controller = controller;
+        if (mounted) setState(() => loading = false);
+      }
+      final c = _controller!;
+      if (c.value.isPlaying) {
+        await c.pause();
+      } else {
+        if (c.value.position >= c.value.duration) await c.seekTo(Duration.zero);
+        await c.play();
+      }
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (mounted) setState(() { loading = false; error = 'Could not play voice note'; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _controller;
+    final playing = c?.value.isPlaying ?? false;
+    final total = widget.durationSeconds;
+    final label = '${(total ~/ 60)}:${(total % 60).toString().padLeft(2, '0')}';
+    return SizedBox(
+      width: 205,
+      child: Row(children: [
+        IconButton(
+          visualDensity: VisualDensity.compact,
+          onPressed: loading ? null : _togglePlayback,
+          icon: loading
+              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              : Icon(playing ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded, size: 34, color: Colors.white),
+        ),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Voice note', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+          if (c != null && c.value.isInitialized)
+            VideoProgressIndicator(c, allowScrubbing: true, colors: const VideoProgressColors(playedColor: Colors.white, bufferedColor: Colors.white38, backgroundColor: Colors.white24))
+          else
+            const LinearProgressIndicator(value: 1, minHeight: 3, backgroundColor: Colors.white24, color: Colors.white70),
+          Text(error ?? label, style: const TextStyle(color: Colors.white70, fontSize: 11)),
+        ])),
+      ]),
     );
   }
 }

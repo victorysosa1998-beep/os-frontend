@@ -38,6 +38,34 @@ class _AuthState extends State<AuthScreen> {
   bool obscure = true;
   bool enableBiometric = false;
   bool biometricEnabled = false;
+  String? biometricEmail; // the ONE account fingerprint is set for on this device
+
+  String get _typedEmail => email.text.trim().toLowerCase();
+
+  /// Fingerprint icon is only offered for the account it was set up for.
+  bool get _bioForThisEmail =>
+      biometricEnabled && biometricEmail != null && _typedEmail == biometricEmail;
+
+  Future<void> _storeBioEmail(String? e) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (e == null) {
+      await prefs.remove('os_biometric_email');
+    } else {
+      await prefs.setString('os_biometric_email', e);
+    }
+    biometricEmail = e;
+  }
+
+  Future<void> _clearBio() async {
+    await Api.setBiometricLoginEnabled(false);
+    await _storeBioEmail(null);
+  }
+
+  void _syncTickToEmail() {
+    // Matching account: icon mode (tick state stays "on" so a password
+    // sign-in never switches it off). Any other email: tick starts unchecked.
+    setState(() => enableBiometric = _bioForThisEmail);
+  }
 
   String gender = 'female';
   String? error;
@@ -54,14 +82,21 @@ class _AuthState extends State<AuthScreen> {
     final saved = prefs.getString('os_last_email');
     if (mounted) setState(() {
       if (email.text.isEmpty && saved != null) email.text = saved;
-      enableBiometric = prefs.getBool('os_biometric_enabled') ?? false;
-      biometricEnabled = enableBiometric;
+      biometricEnabled = prefs.getBool('os_biometric_enabled') ?? false;
+      var bound = prefs.getString('os_biometric_email');
+      // Older installs: fingerprint was set before accounts were tracked.
+      if (biometricEnabled && bound == null && saved != null) {
+        bound = saved.trim().toLowerCase();
+        prefs.setString('os_biometric_email', bound);
+      }
+      biometricEmail = bound;
+      enableBiometric = _bioForThisEmail;
     });
   }
 
   Future<void> _loadBiometricSetting() async {
     final enabled = await Api.biometricLoginEnabled();
-    if (mounted) setState(() { biometricEnabled = enabled; enableBiometric = enabled; });
+    if (mounted) setState(() { biometricEnabled = enabled; enableBiometric = _bioForThisEmail; });
   }
 
   Future<void> _loginWithBiometric() async {
@@ -208,15 +243,19 @@ class _AuthState extends State<AuthScreen> {
 
       if (!mounted) return;
 
-      if (login && !enableBiometric && biometricEnabled) {
-        await Api.setBiometricLoginEnabled(false);
+      final alreadyBound = _bioForThisEmail;
+
+      // Signing up or in as a different account replaces the saved session, so
+      // the old fingerprint binding no longer applies (one account per device).
+      if ((!login || !enableBiometric) && biometricEnabled) {
+        await _clearBio();
         if (mounted) setState(() => biometricEnabled = false);
       }
 
-      if (login && enableBiometric) {
+      if (login && enableBiometric && !alreadyBound) {
         final available = await BiometricAuthService.isAvailable();
         if (!available) {
-          await Api.setBiometricLoginEnabled(false);
+          await _clearBio();
           if (mounted) setState(() { biometricEnabled = false; enableBiometric = false; });
           if (mounted) ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Fingerprint authentication is not set up on this device. You are still signed in.')),
@@ -227,9 +266,10 @@ class _AuthState extends State<AuthScreen> {
           );
           if (verified) {
             await Api.setBiometricLoginEnabled(true);
+            await _storeBioEmail(email.text.trim().toLowerCase());
             if (mounted) setState(() => biometricEnabled = true);
           } else {
-            await Api.setBiometricLoginEnabled(false);
+            await _clearBio();
             if (mounted) setState(() { biometricEnabled = false; enableBiometric = false; });
           }
         }
@@ -429,6 +469,7 @@ class _AuthState extends State<AuthScreen> {
                           autofillHints: const [AutofillHints.email],
                           autocorrect: false,
                           decoration: dec('Email'),
+                          onChanged: (_) => _syncTickToEmail(),
                           validator: validateEmail,
                         ),
                         const SizedBox(height: 12),
@@ -562,7 +603,7 @@ class _AuthState extends State<AuthScreen> {
                           onPressed: go,
                         ),
                         if (login) ...[
-                          if (!biometricEnabled) CheckboxListTile(
+                          if (!_bioForThisEmail) CheckboxListTile(
                             contentPadding: EdgeInsets.zero, dense: true, visualDensity: VisualDensity.compact,
                             value: enableBiometric,
                             onChanged: busy ? null : (value) => setState(() => enableBiometric = value ?? false),
@@ -570,7 +611,7 @@ class _AuthState extends State<AuthScreen> {
                             subtitle: const Text('Needs a fingerprint set up on this phone', style: TextStyle(fontSize: 12, color: OsColors.muted)),
                             controlAffinity: ListTileControlAffinity.leading,
                           ),
-                          if (biometricEnabled) ...[
+                          if (_bioForThisEmail) ...[
                             const SizedBox(height: 16),
                             Center(
                               child: Opacity(

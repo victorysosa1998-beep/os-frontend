@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/api.dart';
 import '../theme/app_theme.dart';
 import '../theme/os_dialogs.dart';
@@ -135,8 +136,20 @@ class SettingsScreen extends StatelessWidget {
               _Tile(Icons.health_and_safety_outlined, 'Safety tips', () => _doc(context, 'Safety tips', OsInfoContent.safety)),
               _Tile(Icons.rule_rounded, 'Community guidelines',
                   () => _doc(context, 'Community guidelines', OsInfoContent.guidelines)),
+              _Tile(Icons.shield_outlined, 'Child safety standards', () async {
+                final uri = Uri.parse('${Api.baseUrl}/child-safety');
+                final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+                if (!opened && context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the child safety page. Please try again.')));
+              }),
               const _Label('Legal'),
-              _Tile(Icons.lock_outline, 'Privacy & verification media', () => _doc(context, 'Privacy', OsInfoContent.privacy)),
+              _Tile(Icons.lock_outline, 'Privacy Policy', () async {
+                final opened = await launchUrl(Uri.parse('${Api.baseUrl}/privacy-policy'), mode: LaunchMode.externalApplication);
+                if (!opened && context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the Privacy Policy. Please try again.')));
+              }),
+              _Tile(Icons.description_outlined, 'Terms of Service', () async {
+                final opened = await launchUrl(Uri.parse('${Api.baseUrl}/terms'), mode: LaunchMode.externalApplication);
+                if (!opened && context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open the Terms of Service. Please try again.')));
+              }),
               const _Label('About'),
               _Tile(Icons.info_outline, 'About OS', () {
                 showAboutDialog(
@@ -149,6 +162,10 @@ class SettingsScreen extends StatelessWidget {
               if (!admin) ...[
                 const _Label('Account'),
                 _Tile(Icons.delete_outline_rounded, 'Delete account', () => _deleteAccount(context), color: Colors.red),
+                _Tile(Icons.open_in_browser, 'Account deletion help (web)', () async {
+                  final opened = await launchUrl(Uri.parse('${Api.baseUrl}/account-deletion'), mode: LaunchMode.externalApplication);
+                  if (!opened && context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open account deletion help. Please try again.')));
+                }),
               ],
               const SizedBox(height: 18),
               OutlinedButton.icon(
@@ -175,7 +192,7 @@ class OsInfoContent {
   static const guidelines = [
     ('Be real', 'Use your own photos and identity. Fake profiles are removed.'),
     ('Be respectful', 'No harassment, hate, threats or unwanted explicit content.'),
-    ('18+ only', 'OS is strictly for adults. Accounts of under-18s are suspended.'),
+    ('18+ only', 'OS is strictly for adults. Under-18 users are not permitted; accounts found to belong to minors are restricted and reviewed for removal.'),
     ('Consent matters', 'Respect a no. Repeated unwanted contact leads to suspension.'),
   ];
   static const privacy = [
